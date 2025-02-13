@@ -4,6 +4,8 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
 import os
 from dotenv import load_dotenv
 import asyncio  # Add asyncio import
@@ -12,8 +14,9 @@ import yaml
 import logging
 
 # Configure logging
+log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, log_level, logging.INFO),
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
@@ -24,11 +27,12 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 NOTIFICATION_TARGETS = [int(id.strip()) for id in os.getenv('NOTIFICATION_TARGETS', '').split(',')]
 TARGET_URL = os.getenv('TARGET_URL')
+ARCS_PAGE_LOAD_WAIT = int(os.getenv('ARCS_PAGE_LOAD_WAIT', 40))  # Convert to integer
 
 # Load player configurations
 with open('players.yml', 'r') as file:
     config = yaml.safe_load(file)
-PLAYERS = config['players']
+    PLAYERS = config['players']
 
 class TurnNotifierBot(discord.Client):
     def __init__(self):
@@ -45,12 +49,13 @@ class TurnNotifierBot(discord.Client):
         self.page_loaded = False
     
     def setup_driver(self):
+        service = Service()
         chrome_options = Options()
-        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--headless=new")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--window-size=1920,1080")  # Set window size
-        self.driver = webdriver.Chrome(options=chrome_options)
+        #chrome_options.add_argument("--window-size=1920,1080")  # Set window size
+        self.driver = webdriver.Chrome(service=service, options=chrome_options)
 
     def get_player_mention(self, color):
         """Get discord mention string for a player color"""
@@ -62,10 +67,9 @@ class TurnNotifierBot(discord.Client):
         try:
             # Initial page load during setup
             self.driver.get(TARGET_URL)
-            await asyncio.sleep(40)  # Wait for initial load
+            await asyncio.sleep(ARCS_PAGE_LOAD_WAIT)  # Use the integer value
             self.page_loaded = True
             logger.info("Initial page load complete")
-            self.check_turn.start()
         except Exception as e:
             logger.error(f"Error during initial page load: {str(e)}")
             self.page_loaded = False
@@ -99,21 +103,25 @@ class TurnNotifierBot(discord.Client):
             except Exception as e:
                 logger.error(f"Error sending to {target_id}: {str(e)}")
 
-    @tasks.loop(minutes=1)
+    @tasks.loop(minutes=int(os.getenv('ARCS_CHECK_INTERVAL', 15)))
     async def check_turn(self):
         try:
             if not self.page_loaded:
                 logger.info("Performing full page load...")
                 self.driver.get(TARGET_URL)
-                await asyncio.sleep(os.environ.get('ARCS_PAGE_LOAD_WAIT', 40))  # Wait for page to load
+                await asyncio.sleep(ARCS_PAGE_LOAD_WAIT)  # Use the integer value
                 self.page_loaded = True
             else:
                 logger.debug("Refreshing page...")
                 self.driver.refresh()
-                await asyncio.sleep(5)
+                await asyncio.sleep(ARCS_PAGE_LOAD_WAIT)
             
-            # Get the full text content first
-            body_text = self.driver.find_element(By.TAG_NAME, "body").text
+            # Wait for the body element to be present
+            logger.debug("Waiting for body element...")
+            body_element = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+            body_text = body_element.text
             logger.debug(f"Page content preview: {body_text[:200]}")
             
             # Look for the complete "Waiting for [Color]" text in the body
@@ -149,9 +157,9 @@ class TurnNotifierBot(discord.Client):
                             await self.send_to_targets(reminder_message)
                         else:
                             hours_until = 24 - ((current_time - self.last_notification_time).total_seconds() / 3600)
-                            logger.debug(f"Still {color}'s turn. Next reminder in {hours_until:.1f}h")
+                            logger.info(f"Still {color}'s turn. Next reminder in {hours_until:.1f}h")
             else:
-                logger.debug("No turn information found")
+                logger.info("No turn information found")
             
         except Exception as e:
             logger.error(f"Error checking turn: {e}", exc_info=True)
@@ -178,6 +186,7 @@ class TurnNotifierBot(discord.Client):
 
     async def on_ready(self):
         logger.info(f"Bot {self.user} has connected to Discord")
+        self.check_turn.start()  # Start the check_turn task here
 
 client = TurnNotifierBot()
 client.run(DISCORD_TOKEN)

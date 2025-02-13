@@ -51,6 +51,10 @@ A Discord bot that monitors an Arcs game and notifies players when it's their tu
    python bot.py
    ```
 
+   Pre built images available at
+   https://hub.docker.com/r/naterd/arcs-turn-notifier/tags
+
+
 ## Discord Bot Setup
 
 1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
@@ -86,6 +90,8 @@ players:
 - `DISCORD_TOKEN`: Your bot's token
 - `NOTIFICATION_TARGETS`: Channel/thread IDs for notifications
 - `TARGET_URL`: URL of the Arcs game to monitor
+- `ARCS_CHECK_INTERVAL`: How often in minutes you want it to check for whose turn it is, defaults to 15 minutes
+- `ARCS_PAGE_LOAD_WAIT`: Sometimes it can be slow loading the game page based on load of the server, defaults to 40 seconds, increase if you have problems
 
 
 ## Contributing
