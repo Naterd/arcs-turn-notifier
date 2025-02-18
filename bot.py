@@ -1,10 +1,8 @@
 import discord
 from discord.ext import tasks
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 import os
 from dotenv import load_dotenv
@@ -12,6 +10,8 @@ import asyncio  # Add asyncio import
 from datetime import datetime, timedelta
 import yaml
 import logging
+import time
+from selenium.common.exceptions import WebDriverException
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
@@ -28,6 +28,7 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 NOTIFICATION_TARGETS = [int(id.strip()) for id in os.getenv('NOTIFICATION_TARGETS', '').split(',')]
 TARGET_URL = os.getenv('TARGET_URL')
 ARCS_PAGE_LOAD_WAIT = int(os.getenv('ARCS_PAGE_LOAD_WAIT', 40))  # Convert to integer
+SELENIUM_URL = os.getenv('SELENIUM_URL', 'http://localhost:4444/wd/hub')
 
 # Load player configurations
 with open('players.yml', 'r') as file:
@@ -49,13 +50,31 @@ class TurnNotifierBot(discord.Client):
         self.page_loaded = False
     
     def setup_driver(self):
-        service = Service()
-        chrome_options = Options()
-        chrome_options.add_argument("--headless=new")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        #chrome_options.add_argument("--window-size=1920,1080")  # Set window size
-        self.driver = webdriver.Chrome(service=service, options=chrome_options)
+        chrome_options = webdriver.ChromeOptions()
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--headless=new')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        
+        max_retries = 5
+        retry_delay = 5
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Attempting to connect to Selenium (attempt {attempt + 1}/{max_retries})")
+                self.driver = webdriver.Remote(
+                    command_executor=SELENIUM_URL,
+                    options=chrome_options
+                )
+                logger.info(f"Successfully connected to Selenium at {SELENIUM_URL}")
+                return
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Failed to connect to Selenium: {str(e)}")
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                else:
+                    logger.error("Failed to connect to Selenium after all retries")
+                    raise
 
     def get_player_mention(self, color):
         """Get discord mention string for a player color"""
@@ -114,7 +133,13 @@ class TurnNotifierBot(discord.Client):
             else:
                 logger.debug("Refreshing page...")
                 self.driver.refresh()
-                await asyncio.sleep(ARCS_PAGE_LOAD_WAIT)
+                await asyncio.sleep(5)
+            
+            # Wait for the specific element to be present indicating the page is fully loaded
+            logger.debug("Waiting for specific element to indicate page load...")
+            WebDriverWait(self.driver, ARCS_PAGE_LOAD_WAIT).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".hrf-info---hrf-xx---hrf-chm---hrf-chp---hrf-thuc---xlo-fullwidth---xlo-fullwidth.thumargin"))
+            )
             
             # Wait for the body element to be present
             logger.debug("Waiting for body element...")

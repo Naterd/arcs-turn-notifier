@@ -1,6 +1,22 @@
 version: '3.8'
 
 services:
+  selenium:
+    image: selenium/standalone-chrome:latest
+    container_name: selenium
+    shm_size: "2g"
+    ports:
+      - "4444:4444"
+    environment:
+      - SE_NODE_MAX_SESSIONS=1
+      - SE_NODE_OVERRIDE_MAX_SESSIONS=true
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:4444/wd/hub/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
   bot:
     build: .
     container_name: arcs-bot
@@ -8,3 +24,9 @@ services:
     volumes:
       - ./.env:/app/.env
       - ./players.yml:/app/players.yml
+    environment:
+      - SELENIUM_URL=http://selenium:4444/wd/hub
+      - ARCS_CHECK_INTERVAL=1
+    depends_on:
+      selenium:
+        condition: service_healthy

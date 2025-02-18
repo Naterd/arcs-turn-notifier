@@ -91,8 +91,17 @@ players:
 - `NOTIFICATION_TARGETS`: Channel/thread IDs for notifications
 - `TARGET_URL`: URL of the Arcs game to monitor
 - `ARCS_CHECK_INTERVAL`: How often in minutes you want it to check for whose turn it is, defaults to 15 minutes
-- `ARCS_PAGE_LOAD_WAIT`: Sometimes it can be slow loading the game page based on load of the server, defaults to 40 seconds, increase if you have problems
+- `ARCS_PAGE_LOAD_WAIT`: Sometimes it can be slow loading the game page based on load of the server, defaults to 40 seconds, increase if you have problems detecting turns because it requires the page to be fully loaded
+- `LOG_LEVEL`: Set logging verbosity (DEBUG, INFO, WARNING, ERROR, CRITICAL), defaults to INFO
+- `SELENIUM_URL`: URL of the Selenium instance, defaults to http://localhost:4444/wd/hub
 
+## Selenium Configuration
+
+The bot uses Selenium with Chrome in headless mode. The docker-compose setup includes:
+- Standalone Chrome container with health checks
+- 2GB shared memory size for stability
+- Configurable session management
+- Automatic retry mechanism for connection issues
 
 ## Contributing
 
