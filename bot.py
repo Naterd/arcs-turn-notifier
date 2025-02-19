@@ -12,6 +12,9 @@ import yaml
 import logging
 import time
 from selenium.common.exceptions import WebDriverException
+import functools
+from selenium.common.exceptions import WebDriverException, TimeoutException, StaleElementReferenceException
+import backoff  # Add to requirements.txt
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
@@ -34,6 +37,24 @@ SELENIUM_URL = os.getenv('SELENIUM_URL', 'http://localhost:4444/wd/hub')
 with open('players.yml', 'r') as file:
     config = yaml.safe_load(file)
     PLAYERS = config['players']
+
+def retry_selenium_operation(max_tries=3, delay=5):
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(self, *args, **kwargs):
+            for attempt in range(max_tries):
+                try:
+                    return await func(self, *args, **kwargs)
+                except (WebDriverException, TimeoutException) as e:
+                    logger.warning(f"Selenium operation failed (attempt {attempt + 1}/{max_tries}): {str(e)}")
+                    if attempt == max_tries - 1:
+                        logger.error("Max retries reached, reconnecting driver")
+                        await self.reconnect_driver()
+                        raise
+                    await asyncio.sleep(delay)
+            return None
+        return wrapper
+    return decorator
 
 class TurnNotifierBot(discord.Client):
     def __init__(self):
@@ -122,42 +143,50 @@ class TurnNotifierBot(discord.Client):
             except Exception as e:
                 logger.error(f"Error sending to {target_id}: {str(e)}")
 
+    async def reconnect_driver(self):
+        """Reconnect the Selenium driver"""
+        logger.info("Reconnecting Selenium driver...")
+        try:
+            if hasattr(self, 'driver'):
+                try:
+                    self.driver.quit()
+                except:
+                    pass
+            self.setup_driver()
+            self.page_loaded = False
+            logger.info("Driver reconnected successfully")
+        except Exception as e:
+            logger.error(f"Failed to reconnect driver: {str(e)}")
+            raise
+
+    @retry_selenium_operation()
+    async def get_current_turn(self):
+        """Get the current turn information with retries"""
+        if not self.page_loaded:
+            self.driver.get(TARGET_URL)
+            await asyncio.sleep(ARCS_PAGE_LOAD_WAIT)
+            self.page_loaded = True
+        else:
+            self.driver.refresh()
+            await asyncio.sleep(5)
+
+        body_element = WebDriverWait(self.driver, ARCS_PAGE_LOAD_WAIT).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
+        return body_element.text
+
     @tasks.loop(minutes=int(os.getenv('ARCS_CHECK_INTERVAL', 15)))
     async def check_turn(self):
         try:
-            if not self.page_loaded:
-                logger.info("Performing full page load...")
-                self.driver.get(TARGET_URL)
-                await asyncio.sleep(ARCS_PAGE_LOAD_WAIT)  # Use the integer value
-                self.page_loaded = True
-            else:
-                logger.debug("Refreshing page...")
-                self.driver.refresh()
-                await asyncio.sleep(5)
-            
-            # Wait for the specific element to be present indicating the page is fully loaded
-            logger.debug("Waiting for specific element to indicate page load...")
-            WebDriverWait(self.driver, ARCS_PAGE_LOAD_WAIT).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, ".hrf-info---hrf-xx---hrf-chm---hrf-chp---hrf-thuc---xlo-fullwidth---xlo-fullwidth.thumargin"))
-            )
-            
-            # Wait for the body element to be present
-            logger.debug("Waiting for body element...")
-            body_element = WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
-            body_text = body_element.text
-            logger.debug(f"Page content preview: {body_text[:200]}")
+            body_text = await self.get_current_turn()
             
             # Look for the complete "Waiting for [Color]" text in the body
             wait_text = None
             for line in body_text.split('\n'):
-                line = line.strip()
-                if line.startswith('Waiting for'):
-                    wait_text = line
-                    logger.debug(f"Found turn status: {wait_text}")
+                if line.strip().startswith('Waiting for'):
+                    wait_text = line.strip()
                     break
-            
+
             if wait_text and len(wait_text.split()) >= 3:  # Ensure we have "Waiting for [Color]"
                 color = wait_text.split('Waiting for ', 1)[1].strip()
                 current_time = datetime.now()
@@ -187,8 +216,9 @@ class TurnNotifierBot(discord.Client):
                 logger.info("No turn information found")
             
         except Exception as e:
-            logger.error(f"Error checking turn: {e}", exc_info=True)
+            logger.error(f"Error in check_turn: {str(e)}", exc_info=True)
             self.page_loaded = False
+            await asyncio.sleep(30)  # Wait before retrying
 
     async def close(self):
         if hasattr(self, 'driver'):
